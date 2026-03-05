@@ -14,7 +14,7 @@
 
 const SHEET_ID = "1Oe7tlTp98Tv5QjndWBlTBFd8o4Rw9QqxoDS3M54-fz8";
 const GREEN_BARCODE = "20221990";
-const DEBUG_MODE = true;          // Set false to hide debug output
+const DEBUG_MODE = false;          // Set false to hide debug output
 const DEBOUNCE_DELAY = 800;       // Milliseconds to wait after last keystroke before auto-processing
 
 /* ------------------------------------------ */
