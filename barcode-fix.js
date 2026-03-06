@@ -1,9 +1,12 @@
 // ==UserScript==
 // @name         POS Barcode Sheet Helper
 // @namespace    pos.helper
-// @version      3.3
+// @version      3.4
 // @description  Adds barcode database from Google Sheets, edits name and price – waits dynamically for elements
 // @match        https://mybug.com.au/*
+// @updateURL    https://raw.githubusercontent.com/tw31122007/Casphone-Barcode-Fix/refs/heads/main/barcode-fix.js
+// @downloadURL  https://raw.githubusercontent.com/tw31122007/Casphone-Barcode-Fix/refs/heads/main/barcode-fix.js
+// @supportURL   https://github.com/tw31122007/Casphone-Barcode-Fix/issues
 // @grant        none
 // ==/UserScript==
 
@@ -14,10 +17,10 @@
 
 const SHEET_ID = "1Oe7tlTp98Tv5QjndWBlTBFd8o4Rw9QqxoDS3M54-fz8";
 const GREEN_BARCODE = "20221990";
-const DEBUG_MODE = false; // Set false to hide debug output
+const DEBUG_MODE = true; // Set false to hide debug output
 const DEBOUNCE_DELAY = 800; // Milliseconds to wait after last keystroke before auto-processing
-const MAX_WAIT_TIME = 30000; // Increased to 30 seconds for very slow internet
-const CHECK_INTERVAL = 500; // Increased to 500ms to reduce load
+const MAX_WAIT_TIME = 30000; // Maximum time to wait for any modal (milliseconds)
+const CHECK_INTERVAL = 500; // How often to check for elements
 
 /* ------------------------------------------ */
 
@@ -210,7 +213,6 @@ function setPriceViaDiscount(row, newPrice) {
             overrideBtn.click();
 
             // After clicking Override, wait for the price input to become enabled
-            // We'll wait for any input that is not disabled (could be the same input that was disabled)
             waitForElementInContainer(modal, 'input[type="text"]:not([disabled]), input[type="number"]:not([disabled])', function(priceInput) {
                 if (priceInput) {
                     debug("✅ Price input became enabled");
@@ -222,7 +224,6 @@ function setPriceViaDiscount(row, newPrice) {
             }, MAX_WAIT_TIME, CHECK_INTERVAL);
         } else {
             debug("ℹ️ Override button not found, looking for price input directly");
-            // Wait for any enabled text/number input
             waitForElementInContainer(modal, 'input[type="text"]:not([disabled]), input[type="number"]:not([disabled])', function(priceInput) {
                 if (priceInput) {
                     debug("✅ Price input found (enabled)");
@@ -237,7 +238,6 @@ function setPriceViaDiscount(row, newPrice) {
 }
 
 function findPriceInputAndSave(modal, newPrice) {
-    // Fallback: try to find price input even if disabled
     let priceInput = modal.querySelector('input[placeholder*="price" i], input[name*="price" i], input[id*="price" i]');
     if (!priceInput) {
         const labels = modal.querySelectorAll('label');
@@ -250,7 +250,7 @@ function findPriceInputAndSave(modal, newPrice) {
         }
     }
     if (!priceInput) {
-        priceInput = modal.querySelector('input[type="text"], input[type="number"]'); // any text/number input
+        priceInput = modal.querySelector('input[type="text"], input[type="number"]');
     }
     if (!priceInput) {
         debug("❌ Price input not found even in fallback");
@@ -268,7 +268,6 @@ function fillPriceAndSave(modal, priceInput, newPrice) {
     priceInput.dispatchEvent(new Event('change', { bubbles: true }));
     debug("💰 Price entered: " + newPrice);
 
-    // Now wait for Save button to be enabled/clickable (optional, but we'll just find it)
     const allButtons = modal.querySelectorAll('button, input[type="button"]');
     const saveBtn = Array.from(allButtons).find(btn => btn.innerText && btn.innerText.toLowerCase().includes('save'));
     if (saveBtn) {
