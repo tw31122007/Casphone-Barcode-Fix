@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         POS Barcode Sheet Helper
 // @namespace    pos.helper
-// @version      2.8
-// @description  Adds barcode database from Google Sheets, edits name and price – with debounce to avoid partial scans
+// @version      3.3
+// @description  Adds barcode database from Google Sheets, edits name and price – waits dynamically for elements
 // @match        https://mybug.com.au/*
 // @grant        none
 // ==/UserScript==
@@ -14,15 +14,17 @@
 
 const SHEET_ID = "1Oe7tlTp98Tv5QjndWBlTBFd8o4Rw9QqxoDS3M54-fz8";
 const GREEN_BARCODE = "20221990";
-const DEBUG_MODE = false;          // Set false to hide debug output
-const DEBOUNCE_DELAY = 800;       // Milliseconds to wait after last keystroke before auto-processing
+const DEBUG_MODE = false; // Set false to hide debug output
+const DEBOUNCE_DELAY = 800; // Milliseconds to wait after last keystroke before auto-processing
+const MAX_WAIT_TIME = 30000; // Increased to 30 seconds for very slow internet
+const CHECK_INTERVAL = 500; // Increased to 500ms to reduce load
 
 /* ------------------------------------------ */
 
 let barcodeDB = {};
 let pendingItem = null;
 let observer = null;
-let scanTimeout = null;            // For debouncing input
+let scanTimeout = null; // For debouncing input
 
 function debug(msg){
     if (!DEBUG_MODE) return;
@@ -49,6 +51,39 @@ function debug(msg){
     line.textContent = msg;
     box.appendChild(line);
     console.log("[POS Helper] " + msg);
+}
+
+// Generic function to wait for an element to appear
+function waitForElement(selector, callback, timeout = MAX_WAIT_TIME, interval = CHECK_INTERVAL) {
+    const startTime = Date.now();
+    const checkExist = setInterval(() => {
+        const element = document.querySelector(selector);
+        if (element) {
+            clearInterval(checkExist);
+            debug(`Element found: ${selector}`);
+            callback(element);
+        } else if (Date.now() - startTime > timeout) {
+            clearInterval(checkExist);
+            debug(`❌ Timeout waiting for: ${selector}`);
+            callback(null);
+        }
+    }, interval);
+}
+
+function waitForElementInContainer(container, selector, callback, timeout = MAX_WAIT_TIME, interval = CHECK_INTERVAL) {
+    const startTime = Date.now();
+    const checkExist = setInterval(() => {
+        const element = container.querySelector(selector);
+        if (element) {
+            clearInterval(checkExist);
+            debug(`Element found in container: ${selector}`);
+            callback(element);
+        } else if (Date.now() - startTime > timeout) {
+            clearInterval(checkExist);
+            debug(`❌ Timeout waiting for: ${selector} in container`);
+            callback(null);
+        }
+    }, interval);
 }
 
 function loadDatabase(){
@@ -86,43 +121,49 @@ function editProductNameViaModal(row, newName, newPrice) {
     if (!nameCell) { debug("❌ Could not find name cell"); return; }
     debug("✅ Product name cell found, clicking...");
     nameCell.click();
-    setTimeout(() => {
-        debug("--- Looking for name edit modal ---");
-        const modal = document.querySelector('.modal, .dialog, [role="dialog"], .bootstrap-dialog, .ppmw, .modal-content, .modal-dialog');
-        if (!modal) { debug("❌ No modal found"); return; }
-        debug("✅ Modal found: " + modal.className);
-        const allInputs = modal.querySelectorAll('input, textarea');
-        debug("Inputs/Textareas: " + allInputs.length);
-        allInputs.forEach((inp, i) => debug(`  Input ${i}: type="${inp.type}" id="${inp.id}" value="${inp.value}"`));
-        let nameInput = null;
-        for (let inp of allInputs) if (inp.value && inp.value.toLowerCase().includes('special item')) { nameInput = inp; debug("Found by value"); break; }
-        if (!nameInput) for (let inp of allInputs) { const id = (inp.id||'').toLowerCase(), nm = (inp.name||'').toLowerCase(); if (id.includes('name')||nm.includes('name')||id.includes('product')||nm.includes('product')) { nameInput = inp; debug("Found by id/name"); break; } }
-        if (!nameInput) { nameInput = modal.querySelector('input[type="text"]:not([disabled]), textarea:not([disabled])'); if (nameInput) debug("Taking first visible text input"); }
-        if (!nameInput) { debug("❌ No name input"); return; }
-        debug("✅ Name input identified, current: " + nameInput.value);
-        nameInput.focus();
-        nameInput.value = newName;
-        nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-        nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-        nameInput.dispatchEvent(new Event('keyup', { bubbles: true }));
-        debug("✅ Name set to: " + newName);
-        const allButtons = modal.querySelectorAll('button, input[type="button"]');
-        debug("Buttons in modal: " + allButtons.length);
-        allButtons.forEach((btn, i) => debug(`  Button ${i}: text="${btn.innerText}" class="${btn.className}"`));
-        const saveBtn = Array.from(allButtons).find(btn => btn.innerText && btn.innerText.toLowerCase().includes('save'));
-        if (saveBtn) {
-            debug("✅ Save button found, clicking...");
-            setTimeout(() => {
-                saveBtn.click();
-                debug("✅ Name update completed. Waiting before price update...");
-                setTimeout(() => setPriceViaDiscount(row, newPrice), 500);
-            }, 200);
-        } else {
-            debug("❌ Save button not found, trying Enter key...");
-            nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-            setTimeout(() => setPriceViaDiscount(row, newPrice), 500);
+
+    waitForElement('.modal, .dialog, [role="dialog"], .bootstrap-dialog, .ppmw, .modal-content, .modal-dialog', function(modal) {
+        if (!modal) {
+            debug("❌ Name edit modal did not appear in time");
+            return;
         }
-    }, 1000);
+        debug("✅ Name edit modal found: " + modal.className);
+
+        waitForElementInContainer(modal, 'input[type="text"]:not([disabled])', function(nameInput) {
+            if (!nameInput) {
+                debug("❌ Name input did not appear in time");
+                return;
+            }
+            debug("✅ Name input found, current value: '" + nameInput.value + "'");
+
+            nameInput.focus();
+            setTimeout(() => {
+                nameInput.value = newName;
+                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
+                nameInput.dispatchEvent(new Event('keyup', { bubbles: true }));
+                debug("✅ Name set to: " + newName);
+
+                const allButtons = modal.querySelectorAll('button, input[type="button"]');
+                debug("Buttons in modal: " + allButtons.length);
+                allButtons.forEach((btn, i) => debug(`  Button ${i}: text="${btn.innerText}" class="${btn.className}"`));
+
+                const saveBtn = Array.from(allButtons).find(btn => btn.innerText && btn.innerText.toLowerCase().includes('save'));
+                if (saveBtn) {
+                    debug("✅ Save button found, clicking...");
+                    setTimeout(() => {
+                        saveBtn.click();
+                        debug("✅ Name update completed. Proceeding to price update...");
+                        setTimeout(() => setPriceViaDiscount(row, newPrice), 500);
+                    }, 200);
+                } else {
+                    debug("❌ Save button not found, trying Enter key...");
+                    nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+                    setTimeout(() => setPriceViaDiscount(row, newPrice), 500);
+                }
+            }, 100);
+        });
+    });
 }
 
 function setPriceViaDiscount(row, newPrice) {
@@ -146,44 +187,57 @@ function setPriceViaDiscount(row, newPrice) {
     debug("Clicking discount trigger...");
     discountTrigger.click();
 
-    let attempts = 0;
-    const maxAttempts = 6;
-    const checkModal = setInterval(() => {
-        attempts++;
-        debug(`Modal search attempt ${attempts}/${maxAttempts}`);
-
-        let modal = document.querySelector('.modal.bootstrap-dialog, .bootstrap-dialog, .modal, .modal-dialog, .modal-content, [role="dialog"]');
-
-        if (modal) {
-            clearInterval(checkModal);
-            debug("✅ Discount modal found: " + modal.className);
-
-            const allButtons = modal.querySelectorAll('button, input[type="button"]');
-            debug("Buttons in modal: " + allButtons.length);
-            allButtons.forEach((btn, i) => debug(`  Button ${i}: text="${btn.innerText}" class="${btn.className}"`));
-
-            const allInputs = modal.querySelectorAll('input');
-            debug("Inputs in modal: " + allInputs.length);
-            allInputs.forEach((inp, i) => debug(`  Input ${i}: type="${inp.type}" id="${inp.id}" placeholder="${inp.placeholder}" value="${inp.value}"`));
-
-            const overrideBtn = Array.from(allButtons).find(btn => btn.innerText && btn.innerText.toLowerCase().includes('override'));
-            if (overrideBtn) {
-                debug("✅ Override button found, clicking...");
-                overrideBtn.click();
-                setTimeout(() => fillPriceAndSave(modal, newPrice), 200);
-            } else {
-                debug("ℹ️ Override button not found, proceeding directly");
-                fillPriceAndSave(modal, newPrice);
-            }
-        } else if (attempts >= maxAttempts) {
-            clearInterval(checkModal);
-            debug("❌ Discount modal not found after " + maxAttempts + " attempts");
+    // Wait for discount modal
+    waitForElement('.modal.bootstrap-dialog, .bootstrap-dialog, .modal, .modal-dialog, .modal-content, [role="dialog"]', function(modal) {
+        if (!modal) {
+            debug("❌ Discount modal did not appear in time");
+            return;
         }
-    }, 500);
+        debug("✅ Discount modal found: " + modal.className);
+
+        const allButtons = modal.querySelectorAll('button, input[type="button"]');
+        debug("Buttons in modal: " + allButtons.length);
+        allButtons.forEach((btn, i) => debug(`  Button ${i}: text="${btn.innerText}" class="${btn.className}"`));
+
+        const allInputs = modal.querySelectorAll('input');
+        debug("Inputs in modal: " + allInputs.length);
+        allInputs.forEach((inp, i) => debug(`  Input ${i}: type="${inp.type}" id="${inp.id}" placeholder="${inp.placeholder}" value="${inp.value}"`));
+
+        // Check for Override button
+        const overrideBtn = Array.from(allButtons).find(btn => btn.innerText && btn.innerText.toLowerCase().includes('override'));
+        if (overrideBtn) {
+            debug("✅ Override button found, clicking...");
+            overrideBtn.click();
+
+            // After clicking Override, wait for the price input to become enabled
+            // We'll wait for any input that is not disabled (could be the same input that was disabled)
+            waitForElementInContainer(modal, 'input[type="text"]:not([disabled]), input[type="number"]:not([disabled])', function(priceInput) {
+                if (priceInput) {
+                    debug("✅ Price input became enabled");
+                    fillPriceAndSave(modal, priceInput, newPrice);
+                } else {
+                    debug("❌ Price input did not become enabled, falling back");
+                    findPriceInputAndSave(modal, newPrice);
+                }
+            }, MAX_WAIT_TIME, CHECK_INTERVAL);
+        } else {
+            debug("ℹ️ Override button not found, looking for price input directly");
+            // Wait for any enabled text/number input
+            waitForElementInContainer(modal, 'input[type="text"]:not([disabled]), input[type="number"]:not([disabled])', function(priceInput) {
+                if (priceInput) {
+                    debug("✅ Price input found (enabled)");
+                    fillPriceAndSave(modal, priceInput, newPrice);
+                } else {
+                    debug("❌ No enabled input found, trying fallback");
+                    findPriceInputAndSave(modal, newPrice);
+                }
+            }, MAX_WAIT_TIME, CHECK_INTERVAL);
+        }
+    });
 }
 
-function fillPriceAndSave(modal, newPrice) {
-    debug("--- Filling price and saving ---");
+function findPriceInputAndSave(modal, newPrice) {
+    // Fallback: try to find price input even if disabled
     let priceInput = modal.querySelector('input[placeholder*="price" i], input[name*="price" i], input[id*="price" i]');
     if (!priceInput) {
         const labels = modal.querySelectorAll('label');
@@ -196,19 +250,25 @@ function fillPriceAndSave(modal, newPrice) {
         }
     }
     if (!priceInput) {
-        priceInput = modal.querySelector('input[type="text"]:not([disabled]), input[type="number"]:not([disabled])');
+        priceInput = modal.querySelector('input[type="text"], input[type="number"]'); // any text/number input
     }
     if (!priceInput) {
-        debug("❌ Price input not found");
+        debug("❌ Price input not found even in fallback");
         return;
     }
-    debug("✅ Price input found: current value: " + priceInput.value);
+    debug("✅ Price input found via fallback, current value: " + priceInput.value);
+    fillPriceAndSave(modal, priceInput, newPrice);
+}
+
+function fillPriceAndSave(modal, priceInput, newPrice) {
+    debug("--- Filling price and saving ---");
     priceInput.focus();
     priceInput.value = newPrice;
     priceInput.dispatchEvent(new Event('input', { bubbles: true }));
     priceInput.dispatchEvent(new Event('change', { bubbles: true }));
     debug("💰 Price entered: " + newPrice);
 
+    // Now wait for Save button to be enabled/clickable (optional, but we'll just find it)
     const allButtons = modal.querySelectorAll('button, input[type="button"]');
     const saveBtn = Array.from(allButtons).find(btn => btn.innerText && btn.innerText.toLowerCase().includes('save'));
     if (saveBtn) {
@@ -242,7 +302,7 @@ function setupObserver() {
                 const newPrice = pendingItem.price;
                 pendingItem = null;
                 debug(`Starting name edit with name: "${newName}", price later: $${newPrice}`);
-                setTimeout(() => editProductNameViaModal(row, newName, newPrice), 500);
+                setTimeout(() => editProductNameViaModal(row, newName, newPrice), 300);
                 break;
             }
         }
@@ -289,10 +349,9 @@ function watchScanner(){
     if(!input){ debug("❌ Search box not found"); return; }
     let lastScanned = '';
 
-    // Clear any pending timeout when Enter is pressed manually
     input.addEventListener("keydown", function(e){
         if(e.key === 'Enter'){
-            clearTimeout(scanTimeout); // Cancel any scheduled auto-process
+            clearTimeout(scanTimeout);
             const scanned = input.value.trim();
             if(scanned === lastScanned) return;
             lastScanned = scanned;
@@ -305,16 +364,12 @@ function watchScanner(){
         }
     });
 
-    // Debounced input handler – waits for typing to pause
     input.addEventListener("input", function(){
         clearTimeout(scanTimeout);
         const currentValue = input.value.trim();
-
-        // Only schedule if the current value matches a barcode in the database
         if (barcodeDB[currentValue]) {
             debug(`Scheduling check for "${currentValue}" after ${DEBOUNCE_DELAY}ms pause`);
             scanTimeout = setTimeout(() => {
-                // Verify that the value hasn't changed during the pause
                 if (input.value.trim() === currentValue) {
                     debug(`Debounced: processing barcode "${currentValue}"`);
                     processBarcode(currentValue);
